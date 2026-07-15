@@ -1,4 +1,6 @@
 ﻿using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -252,7 +254,7 @@ internal static class Program
         {
             try
             {
-                File.CreateHardLink(linkPath, targetPath);
+                CreateHardLinkOrThrow(linkPath, targetPath);
                 events.Enqueue(OperationEvent.Link(linkPath, targetPath));
                 return ActionResult.Success;
             }
@@ -857,6 +859,25 @@ Write-Host 'Remocao de hardlinks concluida.'
 
         return $"{size:0.##} {units[unitIndex]}";
     }
+
+    private static void CreateHardLinkOrThrow(string linkPath, string targetPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Criacao de hardlink suportada apenas em Windows nesta implementacao.");
+        }
+
+        var created = CreateHardLinkWindows(linkPath, targetPath, IntPtr.Zero);
+        if (!created)
+        {
+            var error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error, $"Falha ao criar hardlink. link={linkPath}, target={targetPath}");
+        }
+    }
+
+    [DllImport("Kernel32.dll", EntryPoint = "CreateHardLinkW", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLinkWindows(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
 }
 
 internal enum HashAlgorithmType
