@@ -8,6 +8,8 @@ namespace HardLinkerApp;
 
 internal static class Program
 {
+    private const string DuplicateFolderName = "arquivos_duplicados";
+
     private static int Main(string[] args)
     {
         AppConfig config;
@@ -538,10 +540,9 @@ internal static class Program
             return false;
         }
 
-        if (!map.TryGetValue("dest", out var dest) || string.IsNullOrWhiteSpace(dest))
-        {
-            return false;
-        }
+        var dest = map.TryGetValue("dest", out var parsedDest) && !string.IsNullOrWhiteSpace(parsedDest)
+            ? parsedDest
+            : Environment.CurrentDirectory;
 
         var threads = DefaultThreads();
         if (map.TryGetValue("threads", out var threadsRaw) && int.TryParse(threadsRaw, out var parsedThreads))
@@ -566,28 +567,42 @@ internal static class Program
     private static AppConfig ReadInteractiveConfig()
     {
         Console.WriteLine("HardLinker - Configuracao inicial");
+        Console.WriteLine($"Pasta atual: {Environment.CurrentDirectory}");
+        Console.WriteLine("A origem pode ser informada apenas pelo nome da pasta (relativo a pasta atual).");
+        Console.WriteLine();
 
-        var source = AskRequiredText("Pasta de busca (origem)");
-        var destination = AskRequiredText("Pasta de destino (quarentena)");
+        var source = AskExistingDirectory("Pasta de busca (origem)");
+        var destinationBaseDefault = Environment.CurrentDirectory;
+        var destinationBase = AskExistingDirectoryOptional(
+            $"Pasta de destino base [Enter = {destinationBaseDefault}]",
+            destinationBaseDefault);
+        var destinationPreview = EnsureDuplicateSubfolder(Path.GetFullPath(destinationBase));
+        Console.WriteLine($"Arquivos duplicados serao movidos para a subpasta: {destinationPreview}");
 
         var defaultThreads = DefaultThreads();
         var threads = AskInt($"Quantidade de threads [padrao: {defaultThreads}]", defaultThreads, min: 1);
 
-        var hash = AskHashAlgorithm("Tipo de hash [md5|sha1]", HashAlgorithmType.Md5);
-        var validation = AskValidationLevel("Nivel de validacao [1|2|3]", ValidationLevel.HashSizeName);
+        var hash = AskHashAlgorithmByNumber(HashAlgorithmType.Md5);
+        var validation = AskValidationLevelByNumber(ValidationLevel.HashSizeName);
 
-        return new AppConfig(source, destination, threads, hash, validation);
+        return new AppConfig(source, destinationBase, threads, hash, validation);
     }
 
     private static AppConfig ValidateConfig(AppConfig config)
     {
         var source = Path.GetFullPath(config.SourcePath);
-        var destination = Path.GetFullPath(config.DestinationPath);
+        var destinationBase = Path.GetFullPath(config.DestinationPath);
+        var destination = EnsureDuplicateSubfolder(destinationBase);
         var threads = Math.Max(1, config.Threads);
 
         if (!Directory.Exists(source))
         {
             throw new InvalidOperationException($"Pasta de origem nao existe: {source}");
+        }
+
+        if (!Directory.Exists(destinationBase))
+        {
+            throw new InvalidOperationException($"Pasta base de destino nao existe: {destinationBase}");
         }
 
         if (string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
@@ -598,11 +613,6 @@ internal static class Program
         if (IsSubPath(source, destination))
         {
             throw new InvalidOperationException("Destino nao pode estar dentro da origem.");
-        }
-
-        if (IsSubPath(destination, source))
-        {
-            throw new InvalidOperationException("Origem nao pode estar dentro do destino.");
         }
 
         return config with
@@ -640,6 +650,53 @@ internal static class Program
         }
     }
 
+    private static string AskOptionalText(string label, string defaultValue)
+    {
+        while (true)
+        {
+            Console.Write($"{label}: ");
+            var input = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return defaultValue;
+            }
+
+            return input;
+        }
+    }
+
+    private static string AskExistingDirectory(string label)
+    {
+        while (true)
+        {
+            var input = AskRequiredText(label);
+            var fullPath = Path.GetFullPath(input);
+
+            if (Directory.Exists(fullPath))
+            {
+                return input;
+            }
+
+            Console.WriteLine($"Pasta nao encontrada: {fullPath}");
+        }
+    }
+
+    private static string AskExistingDirectoryOptional(string label, string defaultValue)
+    {
+        while (true)
+        {
+            var input = AskOptionalText(label, defaultValue);
+            var fullPath = Path.GetFullPath(input);
+
+            if (Directory.Exists(fullPath))
+            {
+                return input;
+            }
+
+            Console.WriteLine($"Pasta nao encontrada: {fullPath}");
+        }
+    }
+
     private static int AskInt(string label, int defaultValue, int min)
     {
         while (true)
@@ -658,12 +715,18 @@ internal static class Program
         }
     }
 
-    private static HashAlgorithmType AskHashAlgorithm(string label, HashAlgorithmType defaultValue)
+    private static HashAlgorithmType AskHashAlgorithmByNumber(HashAlgorithmType defaultValue)
     {
+        var defaultNumber = defaultValue == HashAlgorithmType.Md5 ? 1 : 2;
+
         while (true)
         {
-            Console.Write($"{label}: ");
+            Console.WriteLine("Tipo de hash:");
+            Console.WriteLine("  1 - MD5 (padrao)");
+            Console.WriteLine("  2 - SHA1");
+            Console.Write($"Opcao de hash [padrao: {defaultNumber}]: ");
             var input = Console.ReadLine()?.Trim();
+
             if (string.IsNullOrWhiteSpace(input))
             {
                 return defaultValue;
@@ -673,15 +736,24 @@ internal static class Program
             {
                 return value;
             }
+
+            Console.WriteLine("Opcao invalida. Informe 1 (MD5) ou 2 (SHA1).");
         }
     }
 
-    private static ValidationLevel AskValidationLevel(string label, ValidationLevel defaultValue)
+    private static ValidationLevel AskValidationLevelByNumber(ValidationLevel defaultValue)
     {
+        var defaultNumber = (int)defaultValue;
+
         while (true)
         {
-            Console.Write($"{label}: ");
+            Console.WriteLine("Nivel de validacao de duplicidade:");
+            Console.WriteLine("  1 - hash + tamanho + nome (mais restrito)");
+            Console.WriteLine("  2 - hash + tamanho");
+            Console.WriteLine("  3 - nome + tamanho (mais rapido, menos confiavel)");
+            Console.Write($"Opcao de validacao [padrao: {defaultNumber}]: ");
             var input = Console.ReadLine()?.Trim();
+
             if (string.IsNullOrWhiteSpace(input))
             {
                 return defaultValue;
@@ -691,12 +763,26 @@ internal static class Program
             {
                 return value;
             }
+
+            Console.WriteLine("Opcao invalida. Informe 1, 2 ou 3.");
         }
     }
 
     private static bool TryParseHash(string raw, out HashAlgorithmType hash)
     {
         hash = default;
+        if (raw == "1")
+        {
+            hash = HashAlgorithmType.Md5;
+            return true;
+        }
+
+        if (raw == "2")
+        {
+            hash = HashAlgorithmType.Sha1;
+            return true;
+        }
+
         if (string.Equals(raw, "md5", StringComparison.OrdinalIgnoreCase))
         {
             hash = HashAlgorithmType.Md5;
@@ -732,10 +818,26 @@ internal static class Program
 
     private static int DefaultThreads() => Math.Max(1, Environment.ProcessorCount / 2);
 
+    private static string EnsureDuplicateSubfolder(string destinationBasePath)
+    {
+        var normalizedBase = Path.GetFullPath(destinationBasePath);
+        var folderName = Path.GetFileName(normalizedBase.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        if (string.Equals(folderName, DuplicateFolderName, StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedBase;
+        }
+
+        return Path.Combine(normalizedBase, DuplicateFolderName);
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine("Uso:");
-        Console.WriteLine("  HardLinkerApp --source <pasta> --dest <pasta> --threads <n> --hash <md5|sha1> --validation <1|2|3>");
+        Console.WriteLine("  HardLinkerApp --source <pasta> [--dest <pasta_base>] [--threads <n>] [--hash <1|2>] [--validation <1|2|3>]");
+        Console.WriteLine("Hash: 1=MD5 (padrao), 2=SHA1.");
+        Console.WriteLine("Validacao: 1=hash+tamanho+nome, 2=hash+tamanho, 3=nome+tamanho.");
+        Console.WriteLine($"Destino final sempre sera uma subpasta '{DuplicateFolderName}' dentro da pasta base de destino.");
         Console.WriteLine("Se argumentos obrigatorios nao forem informados, o modo interativo sera usado.");
     }
 
